@@ -5,7 +5,7 @@
 # usage:
 #  GITLAB_API_URL=".../api/v4" \
 #  GITLAB_PRIVATE_TOKEN="..." \
-#  GITLAB_PROJECT="myproject" \
+#  GITLAB_PROJECTS="myproject,myproject2" \
 #  TEAMS_WEBHOOK_URL="..." \
 #  python3 review-reminder.py
 # optional:
@@ -16,10 +16,11 @@
 import os
 import json
 import requests
+from datetime import datetime
 
 GITLAB_API_URL = os.getenv("GITLAB_API_URL")
 GITLAB_PRIVATE_TOKEN = os.getenv("GITLAB_PRIVATE_TOKEN")
-GITLAB_PROJECT = os.getenv("GITLAB_PROJECT")
+GITLAB_PROJECTS = os.getenv("GITLAB_PROJECTS")
 TEAMS_WEBHOOK_URL = os.getenv("TEAMS_WEBHOOK_URL")
 USER_EMAILS = os.getenv("USER_EMAILS")
 
@@ -60,15 +61,24 @@ def get_user_info(user_id):
     if not name:
         name = username
 
+    if not email:
+        email = user_emails.get(username)
+
     return {
         "username": username,
         "name": name,
         "email": email
     }
 
-def get_message_parts(mr_title, mr_url, user_ids):
-    message = f"[{mr_title}]({mr_url})"
+def make_text(text, bold = False, separator = False):
+    return [{
+        "type": "TextBlock",
+        "text": text,
+        "separator": separator,
+        "weight": "bolder" if bold else "default"
+    }]
 
+def make_mentions(user_ids):
     users = [get_user_info(id) for id in user_ids]
     users = [user for user in users if user["email"]]
 
@@ -84,36 +94,19 @@ def get_message_parts(mr_title, mr_url, user_ids):
             }
         })
 
-    return {
-        "body": [
-            {
-                "type": "TextBlock",
-                "text": message
-            },
-            {
-                "type": "TextBlock",
-                "text": mentions
-            }
-        ],
-        "entities": entities
-    }
+    return [{
+        "type": "TextBlock",
+        "text": mentions
+    }], entities
 
-def get_message(body, entities):
-    title = "Outstanding MR review requests"
-
+def make_message(body, entities):
     return {
         "type": "message",
         "attachments": [{
             "contentType": "application/vnd.microsoft.card.adaptive",
             "content": {
                 "type": "AdaptiveCard",
-                "body": [
-                    {
-                        "type": "TextBlock",
-                        "weight": "Bolder",
-                        "text": title
-                    },
-                ] + body,
+                "body": body,
                 "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
                 "version": "1.0",
                 "msteams": {
@@ -124,40 +117,70 @@ def get_message(body, entities):
         }]
     }
 
-project_id = None
-merge_requests = []
-
-if GITLAB_PROJECT:
-    project_id = get_project_id(GITLAB_PROJECT)
-    merge_requests = get_merge_requests(project_id)
-
-body = []
-entities = []
 notified_mrs = set()
 notified_people = set()
+body = []
+entities = []
 
-for merge_request in merge_requests:
-    if merge_request["draft"]:
-        continue
+text = "Happy " + datetime.now().strftime('%A') + " Everyone!"
+body = body + make_text(text)
+text = "Here are the Merge Requests needing review..."
+body = body + make_text(text)
 
-    mr_id = merge_request["iid"]
-    mr_title = merge_request["title"]
-    mr_url = merge_request["web_url"]
+for project in GITLAB_PROJECTS.split(','):
+    project_id = get_project_id(project)
+    merge_requests = filter(lambda mr: not mr['draft'], get_merge_requests(project_id))
 
-    reviewers = get_reviewers(merge_request["reviewers"])
-    approvers = request_approvers(project_id, mr_id)
-    pending = set(reviewers) - set(approvers)
+    project_body = []
+    for merge_request in merge_requests:
+        mr_id = merge_request["iid"]
 
-    if len(pending) > 0:
-        parts = get_message_parts(mr_title, mr_url, pending)
-        body = body + parts["body"]
-        entities = entities + parts["entities"]
+        reviewers = get_reviewers(merge_request["reviewers"])
+        approvers = request_approvers(project_id, mr_id)
+        pending = set(reviewers) - set(approvers)
 
-        notified_mrs.add(mr_id)
-        notified_people.update(pending)
+        if len(pending) > 0:
+            mr_title = merge_request["title"]
+            mr_url = merge_request["web_url"]
+            title = f"[{mr_title}]({mr_url})"
+            title = make_text(title, bold = True)
 
-if body:
-    message = get_message(body, entities)
+            mention_parts, mention_entities = make_mentions(pending)
+
+            project_body = project_body + title + mention_parts
+            entities = entities + mention_entities
+
+            notified_mrs.add(mr_id)
+            notified_people.update(pending)
+
+    if len(project_body) > 0:
+        body = body + make_text("") + make_text(project, bold = True) + [
+            {
+                'type': 'ColumnSet',
+                'columns': [
+                    {
+                        'type': 'Column',
+                        'width': 'auto',
+                        'items': [
+                            {
+                                'type': 'TextBlock',
+                                'text': ''
+                            }
+                        ]
+                    },
+                    {
+                        'type': 'Column',
+                        'width': 'stretch',
+                        'separator': True,
+                        'items': project_body
+                    }
+                ]
+            }
+        ]
+
+if len(notified_people) > 0:
+    message = make_message(body, entities)
+    print(json.dumps(message, indent=2))
     response = requests.post(TEAMS_WEBHOOK_URL, json = message)
 
 print(f"Notified {len(notified_people)} people about {len(notified_mrs)} MRs")

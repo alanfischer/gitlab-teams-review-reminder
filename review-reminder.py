@@ -30,12 +30,16 @@ user_emails = json.loads(USER_EMAILS) if USER_EMAILS else {}
 def get_project_id(project):
     url = f"{GITLAB_API_URL}/search"
     response = requests.get(url, params = {"scope": "projects", "search": project}, headers = headers)
+    if not response.ok:
+        raise Exception(response.json())
     projects = response.json()
     return projects[0]["id"] if projects else None
 
 def get_merge_requests(project_id):
     url = f"{GITLAB_API_URL}/projects/{project_id}/merge_requests"
     response = requests.get(url, params = {"per_page": "100", "state": "opened"}, headers = headers)
+    if not response.ok:
+        raise Exception(response.json())
     return response.json()
 
 def get_reviewers(reviewers):
@@ -44,6 +48,8 @@ def get_reviewers(reviewers):
 def request_approvers(project_id, mr_id):
     url = f"{GITLAB_API_URL}/projects/{project_id}/merge_requests/{mr_id}/approvals"
     response = requests.get(url, headers = headers)
+    if not response.ok:
+        raise Exception(response.json())
     return get_approvers(response.json())
 
 def get_approvers(approvers):
@@ -52,6 +58,8 @@ def get_approvers(approvers):
 def get_user_info(user_id):
     url = f"{GITLAB_API_URL}/users/{user_id}"
     response = requests.get(url, headers = headers)
+    if not response.ok:
+        raise Exception(response.json())
     user_data = response.json()
 
     username = user_data["username"]
@@ -127,19 +135,23 @@ body = body + make_text(text)
 text = "Here are the Merge Requests needing review..."
 body = body + make_text(text)
 
-for project in GITLAB_PROJECTS.split(','):
-    project_id = get_project_id(project)
-    merge_requests = filter(lambda mr: not mr['draft'], get_merge_requests(project_id))
+if GITLAB_PROJECTS:
+    for project in GITLAB_PROJECTS.split(','):
+        project_id = get_project_id(project)
+        merge_requests = filter(lambda mr: not mr['draft'], get_merge_requests(project_id))
 
-    project_body = []
-    for merge_request in merge_requests:
-        mr_id = merge_request["iid"]
+        project_body = []
+        for merge_request in merge_requests:
+            mr_id = merge_request["iid"]
 
-        reviewers = get_reviewers(merge_request["reviewers"])
-        approvers = request_approvers(project_id, mr_id)
-        pending = set(reviewers) - set(approvers)
+            reviewers = get_reviewers(merge_request["reviewers"])
+            approvers = request_approvers(project_id, mr_id)
+            pending = set(reviewers) - set(approvers)
 
-        if len(pending) > 0:
+            if len(pending) == 0:
+                print(merge_request)
+                pending = [merge_request['author']['id']]
+
             mr_title = merge_request["title"]
             mr_url = merge_request["web_url"]
             title = f"[{mr_title}]({mr_url})"
@@ -153,30 +165,30 @@ for project in GITLAB_PROJECTS.split(','):
             notified_mrs.add(mr_id)
             notified_people.update(pending)
 
-    if len(project_body) > 0:
-        body = body + make_text("") + make_text(project, bold = True) + [
-            {
-                'type': 'ColumnSet',
-                'columns': [
-                    {
-                        'type': 'Column',
-                        'width': 'auto',
-                        'items': [
-                            {
-                                'type': 'TextBlock',
-                                'text': ''
-                            }
-                        ]
-                    },
-                    {
-                        'type': 'Column',
-                        'width': 'stretch',
-                        'separator': True,
-                        'items': project_body
-                    }
-                ]
-            }
-        ]
+        if len(project_body) > 0:
+            body = body + make_text("") + make_text(project, bold = True) + [
+                {
+                    'type': 'ColumnSet',
+                    'columns': [
+                        {
+                            'type': 'Column',
+                            'width': 'auto',
+                            'items': [
+                                {
+                                    'type': 'TextBlock',
+                                    'text': ''
+                                }
+                            ]
+                        },
+                        {
+                            'type': 'Column',
+                            'width': 'stretch',
+                            'separator': True,
+                            'items': project_body
+                        }
+                    ]
+                }
+            ]
 
 if len(notified_people) > 0:
     message = make_message(body, entities)

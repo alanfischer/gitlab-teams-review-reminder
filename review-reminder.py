@@ -149,12 +149,19 @@ if GITLAB_PROJECTS:
             pending = set(reviewers) - set(approvers)
 
             if len(pending) == 0:
-                print(merge_request)
                 pending = [merge_request['author']['id']]
+
+            updated_at = merge_request['updated_at']
+            updated_date = datetime.strptime(updated_at, "%Y-%m-%dT%H:%M:%S.%fZ")
+            stale_days = (datetime.now() - updated_date).days
+
+            stale = ""
+            if stale_days > 3:
+                stale = f" {stale_days} days old"
 
             mr_title = merge_request["title"]
             mr_url = merge_request["web_url"]
-            title = f"[{mr_title}]({mr_url})"
+            title = f"[{mr_title}]({mr_url})" + stale
             title = make_text(title, bold = True)
 
             mention_parts, mention_entities = make_mentions(pending)

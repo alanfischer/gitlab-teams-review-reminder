@@ -16,7 +16,7 @@
 import os
 import json
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 
 GITLAB_API_URL = os.getenv("GITLAB_API_URL")
 GITLAB_PRIVATE_TOKEN = os.getenv("GITLAB_PRIVATE_TOKEN")
@@ -153,10 +153,14 @@ if GITLAB_PROJECTS:
 
             updated_at = merge_request['updated_at']
             updated_date = datetime.strptime(updated_at, "%Y-%m-%dT%H:%M:%S.%fZ")
-            stale_days = (datetime.now() - updated_date).days
+            current_date = datetime.utcnow()
+
+            # Don't count weekends
+            dates = (updated_date + timedelta(idx + 1) for idx in range((current_date - updated_date).days))
+            stale_days = sum(1 for day in dates if day.weekday() < 5)
 
             stale = ""
-            if stale_days > 3:
+            if stale_days > 2:
                 stale = f" {stale_days} days old"
 
             mr_title = merge_request["title"]

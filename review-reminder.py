@@ -1,17 +1,15 @@
 # review-reminder.py
-#  python script to notify individuals in teams if they have outstanding merge requests requiring their review
+# python script to notify individuals in teams if they have outstanding merge requests requiring their review
 # prerequisites:
-#  each gitlab user should have their "public email" set to their teams email
+# each gitlab user should have their "public email" set to their teams email
 # usage:
-#  GITLAB_API_URL=".../api/v4" \
-#  GITLAB_PRIVATE_TOKEN="..." \
-#  GITLAB_PROJECTS="myproject,myproject2" \
-#  TEAMS_WEBHOOK_URL="..." \
-#  python3 review-reminder.py
+# GITLAB_API_URL=".../api/v4" \
+# GITLAB_PRIVATE_TOKEN="..." \
+# GITLAB_PROJECTS="myproject,myproject2" \
+# TEAMS_WEBHOOK_URL="..." \
+# python3 review-reminder.py
 # optional:
-#  USER_EMAILS="{\"username\":\"email\"}" : Useful if a user is unable to set their "public email" for some reason
-
-# TODO: Handle MRs that have unaddressed threads, and notify the author instead
+# USER_EMAILS="{\"username\":\"email\"}" : Useful if a user is unable to set their "public email" for some reason
 
 import os
 import json
@@ -38,6 +36,13 @@ def get_project_id(project):
 def get_merge_requests(project_id):
     url = f"{GITLAB_API_URL}/projects/{project_id}/merge_requests"
     response = requests.get(url, params = {"per_page": "100", "state": "opened"}, headers = headers)
+    if not response.ok:
+        raise Exception(response.json())
+    return response.json()
+
+def get_mr_discussions(project_id, mr_id):
+    url = f"{GITLAB_API_URL}/projects/{project_id}/merge_requests/{mr_id}/discussions"
+    response = requests.get(url, headers=headers)
     if not response.ok:
         raise Exception(response.json())
     return response.json()
@@ -144,12 +149,24 @@ if GITLAB_PROJECTS:
         for merge_request in merge_requests:
             mr_id = merge_request["iid"]
 
+            # Fetching discussions for the MR
+            discussions = get_mr_discussions(project_id, mr_id)
+            # Find authors of unresolved discussion notes
+            authors_unresolved_discussions = set()
+            for discussion in discussions:
+                for note in discussion['notes']:
+                    if 'resolved' in note and not note['resolved']:
+                        authors_unresolved_discussions.add(note['author']['id'])
+
             reviewers = get_reviewers(merge_request["reviewers"])
             approvers = request_approvers(project_id, mr_id)
             pending = set(reviewers) - set(approvers)
 
-            if len(pending) == 0:
-                pending = [merge_request['author']['id']]
+            if len(authors_unresolved_discussions) > 0 or len(pending) == 0:
+                # Exclude authors of unresolved discussions
+                pending -= authors_unresolved_discussions
+                # Notify author if any unresolved discussions, or no one to notify
+                pending.update(set([merge_request['author']['id']]))
 
             updated_at = merge_request['updated_at']
             updated_date = datetime.strptime(updated_at, "%Y-%m-%dT%H:%M:%S.%fZ")
